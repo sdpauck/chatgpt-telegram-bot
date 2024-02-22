@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import requests
 import asyncio
 import logging
 import os
+import sys
 import io
+from datetime import datetime
+from dotenv import load_dotenv
+import subprocess
 
 from uuid import uuid4
 from telegram import BotCommandScopeAllGroupChats, Update, constants
@@ -35,6 +40,8 @@ class ChatGPTTelegramBot:
         :param config: A dictionary containing the bot configuration
         :param openai: OpenAIHelper object
         """
+        
+        self.bot=""
         self.config = config
         self.openai = openai
         bot_language = self.config['bot_language']
@@ -42,7 +49,10 @@ class ChatGPTTelegramBot:
             BotCommand(command='help', description=localized_text('help_description', bot_language)),
             BotCommand(command='reset', description=localized_text('reset_description', bot_language)),
             BotCommand(command='stats', description=localized_text('stats_description', bot_language)),
-            BotCommand(command='resend', description=localized_text('resend_description', bot_language))
+            BotCommand(command='resend', description=localized_text('resend_description', bot_language)),
+            BotCommand(command='restart', description=localized_text('restart_description', bot_language)),
+            BotCommand(command='reg', description=localized_text('reg_description', bot_language)),
+            BotCommand(command='id', description=localized_text('id_description', bot_language))
         ]
         # If imaging is enabled, add the "image" command to the list
         if self.config.get('enable_image_generation', False):
@@ -60,6 +70,28 @@ class ChatGPTTelegramBot:
         self.last_message = {}
         self.inline_queries_cache = {}
 
+    async def save_image_from_url(self, image_url, image_path):
+            response = requests.get(image_url)
+            if response.status_code == 200:
+                with open(image_path, 'wb') as file:
+                    file.write(response.content)
+                    
+    async def log_user_message(self, user_id, type, message):
+        log_dir = f"log/{user_id}"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        date = datetime.now().strftime('%d.%m.%Y')
+        datetimestamp = datetime.now().strftime('%d.%m.%Y_%H.%M.%S')
+        if type == "IMG: ":
+            file_type = "jpg"
+            file_path = f"{log_dir}/{datetimestamp}.{file_type}"
+            await self.save_image_from_url(message, file_path)
+            message = f"![]({datetimestamp}.{file_type})"
+        log_file = os.path.join(log_dir, f"{date}.md")
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        with open(log_file, "a") as file:
+            file.write(f"#### {timestamp} {type}\n{message}\n")
+        
     async def help(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         """
         Shows the help menu.
@@ -78,6 +110,68 @@ class ChatGPTTelegramBot:
         )
         await update.message.reply_text(help_text, disable_web_page_preview=True)
 
+    async def id(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Shows chat id.
+        """
+        user_id = update.message.from_user.id
+        id_text = user_id
+        await update.message.reply_text(id_text, disable_web_page_preview=True)
+        
+    async def id(self, update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+        """
+        Shows chat id.
+        """
+        user_id = update.message.from_user.id
+        id_text = user_id
+        await update.message.reply_text(id_text, disable_web_page_preview=True)
+        
+    async def restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Restarts bot.
+        """
+        restart_text=""
+        admin_ids = os.getenv('ADMIN_USER_IDS')
+        isAdmin = str(update.message.from_user.id) in admin_ids.split(',')
+        if not await is_allowed(self.config, update, context):
+            logging.warning(f'User {update.message.from_user.name} (id: {update.message.from_user.id}) '
+                            f'is not allowed to request their usage statistics')
+            await self.send_disallowed_message(update, context)
+            return
+        
+        if not isAdmin:
+            restart_text = "НЕТ!"
+            await update.message.reply_text(restart_text, disable_web_page_preview=True)
+            return
+  
+        restart_text = f"Перезапускаюсь...{admin_ids}"
+        await update.message.reply_text(restart_text, disable_web_page_preview=True)
+        
+        load_dotenv(override=True)
+        python = sys.executable
+        #os.execl(python, python, *sys.argv)
+        subprocess.Popen([python, *sys.argv])
+        os._exit(0)
+        
+        
+    async def reg(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Registration request
+        """
+        phone_query = message_text(update.message)
+        if phone_query == '':
+            await update.effective_message.reply_text(
+                message_thread_id=get_thread_id(update),
+                text=localized_text('no_phone', self.config['bot_language'])
+            )
+            return
+        reg_text = f"Регистрацияя {phone_query} {update.message.from_user.name} - {update.message.from_user.id}"
+        
+
+        await update.message.reply_text(reg_text, disable_web_page_preview=True)
+        
+        await self.bot.send_message(chat_id=105132506, text=reg_text)
+            
     async def stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
         Returns token usage statistics for current day and month.
@@ -248,7 +342,7 @@ class ChatGPTTelegramBot:
                 text=localized_text('image_no_prompt', self.config['bot_language'])
             )
             return
-
+        await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"IMAGE: ", image_query)
         logging.info(f'New image generation request received from user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})')
 
@@ -265,6 +359,7 @@ class ChatGPTTelegramBot:
                         reply_to_message_id=get_reply_to_message_id(self.config, update),
                         document=image_url
                     )
+                    
                 else:
                     raise Exception(f"env variable IMAGE_RECEIVE_MODE has invalid value {self.config['image_receive_mode']}")
                 # add image request to users usage tracker
@@ -273,6 +368,8 @@ class ChatGPTTelegramBot:
                 # add guest chat request to guest usage tracker
                 if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
                     self.usage["guests"].add_image_request(image_size, self.config['image_prices'])
+                    
+                await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"IMG: ", image_url)
 
             except Exception as e:
                 logging.exception(e)
@@ -284,6 +381,7 @@ class ChatGPTTelegramBot:
                 )
 
         await wrap_with_indicator(update, context, _generate, constants.ChatAction.UPLOAD_PHOTO)
+        
 
     async def tts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -300,7 +398,7 @@ class ChatGPTTelegramBot:
                 text=localized_text('tts_no_prompt', self.config['bot_language'])
             )
             return
-
+        await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"TTS: ", tts_query)
         logging.info(f'New speech generation request received from user {update.message.from_user.name} '
                      f'(id: {update.message.from_user.id})')
 
@@ -310,7 +408,11 @@ class ChatGPTTelegramBot:
 
                 await update.effective_message.reply_voice(
                     reply_to_message_id=get_reply_to_message_id(self.config, update),
-                    voice=speech_file
+                    voice=speech_file,
+                    read_timeout = 60,
+                    write_timeout = 60,
+                    connect_timeout = 60,
+                    pool_timeout = 60,
                 )
                 speech_file.close()
                 # add image request to users usage tracker
@@ -319,7 +421,7 @@ class ChatGPTTelegramBot:
                 # add guest chat request to guest usage tracker
                 if str(user_id) not in self.config['allowed_user_ids'].split(',') and 'guests' in self.usage:
                     self.usage["guests"].add_tts_request(text_length, self.config['tts_model'], self.config['tts_prices'])
-
+                
             except Exception as e:
                 logging.exception(e)
                 await update.effective_message.reply_text(
@@ -369,7 +471,7 @@ class ChatGPTTelegramBot:
                 audio_track.export(filename_mp3, format="mp3")
                 logging.info(f'New transcribe request received from user {update.message.from_user.name} '
                              f'(id: {update.message.from_user.id})')
-
+                
             except Exception as e:
                 logging.exception(e)
                 await update.effective_message.reply_text(
@@ -425,6 +527,8 @@ class ChatGPTTelegramBot:
                         f"_{localized_text('transcript', bot_language)}:_\n\"{transcript}\"\n\n"
                         f"_{localized_text('answer', bot_language)}:_\n{response}"
                     )
+                    await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"VOICE: ", transcript)
+                    await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"RESPONSE: ", response)
                     chunks = split_into_chunks(transcript_output)
 
                     for index, transcript_chunk in enumerate(chunks):
@@ -533,7 +637,7 @@ class ChatGPTTelegramBot:
 
                     if len(content.strip()) == 0:
                         continue
-
+                    
                     stream_chunks = split_into_chunks(content)
                     if len(stream_chunks) > 1:
                         content = stream_chunks[-1]
@@ -590,7 +694,7 @@ class ChatGPTTelegramBot:
                         except Exception:
                             backoff += 5
                             continue
-
+                        
                         await asyncio.sleep(0.01)
 
                     i += 1
@@ -653,13 +757,15 @@ class ChatGPTTelegramBot:
         if not await self.check_allowed_and_within_budget(update, context):
             return
 
+        
         logging.info(
             f'New message received from user {update.message.from_user.name} (id: {update.message.from_user.id})')
         chat_id = update.effective_chat.id
         user_id = update.message.from_user.id
         prompt = message_text(update.message)
         self.last_message[chat_id] = prompt
-
+        await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}',"TEXT: ", prompt)
+        
         if is_group_chat(update):
             trigger_keyword = self.config['group_trigger_keyword']
 
@@ -688,19 +794,24 @@ class ChatGPTTelegramBot:
                 )
 
                 stream_response = self.openai.get_chat_response_stream(chat_id=chat_id, query=prompt)
+                
                 i = 0
                 prev = ''
                 sent_message = None
                 backoff = 0
                 stream_chunk = 0
 
+                accumulated_content = ""
                 async for content, tokens in stream_response:
                     if is_direct_result(content):
                         return await handle_direct_result(self.config, update, content)
 
                     if len(content.strip()) == 0:
                         continue
-
+                        
+                    
+                    accumulated_content = content
+                    
                     stream_chunks = split_into_chunks(content)
                     if len(stream_chunks) > 1:
                         content = stream_chunks[-1]
@@ -741,6 +852,9 @@ class ChatGPTTelegramBot:
 
                         try:
                             use_markdown = tokens != 'not_finished'
+                            if use_markdown:
+                                await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}', "RESPONSE: ", accumulated_content)
+                            accumulated_content = ""
                             await edit_message_with_retry(context, chat_id, str(sent_message.message_id),
                                                           text=content, markdown=use_markdown)
 
@@ -768,13 +882,15 @@ class ChatGPTTelegramBot:
                 async def _reply():
                     nonlocal total_tokens
                     response, total_tokens = await self.openai.get_chat_response(chat_id=chat_id, query=prompt)
-
                     if is_direct_result(response):
                         return await handle_direct_result(self.config, update, response)
 
+                        
                     # Split into chunks of 4096 characters (Telegram's message limit)
                     chunks = split_into_chunks(response)
-
+                    
+                    await self.log_user_message(f'{update.message.from_user.name}.{update.message.from_user.id}', "RESPONSE: ", response)
+                    
                     for index, chunk in enumerate(chunks):
                         try:
                             await update.effective_message.reply_text(
@@ -798,8 +914,14 @@ class ChatGPTTelegramBot:
                 await wrap_with_indicator(update, context, _reply, constants.ChatAction.TYPING)
 
             add_chat_request_to_usage_tracker(self.usage, self.config, user_id, total_tokens)
-
+            
+        except TypeError as e:
+            logging.error("TypeError occurred: %s", e)
+            await self.bot.send_message(chat_id=105132506, text=f"{update.message.from_user.name}.{update.message.from_user.id}  TypeError! VPN???")
+            await self.bot.send_message(chat_id=update.message.from_user.id, text=f"Привет, {update.message.from_user.name}.  Произошла ошибка. Админ уже знает.")
+            
         except Exception as e:
+            logging.exception(type(e).__name__)
             logging.exception(e)
             await update.effective_message.reply_text(
                 message_thread_id=get_thread_id(update),
@@ -1041,6 +1163,7 @@ class ChatGPTTelegramBot:
         """
         Post initialization hook for the bot.
         """
+        self.bot = application.bot
         await application.bot.set_my_commands(self.group_commands, scope=BotCommandScopeAllGroupChats())
         await application.bot.set_my_commands(self.commands)
 
@@ -1063,6 +1186,9 @@ class ChatGPTTelegramBot:
         application.add_handler(CommandHandler('start', self.help))
         application.add_handler(CommandHandler('stats', self.stats))
         application.add_handler(CommandHandler('resend', self.resend))
+        application.add_handler(CommandHandler('id', self.id))
+        application.add_handler(CommandHandler('restart', self.restart))
+        application.add_handler(CommandHandler('reg', self.reg))
         application.add_handler(CommandHandler(
             'chat', self.prompt, filters=filters.ChatType.GROUP | filters.ChatType.SUPERGROUP)
         )
