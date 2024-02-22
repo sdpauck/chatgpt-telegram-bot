@@ -260,6 +260,9 @@ class OpenAIHelper:
                     common_args['function_call'] = 'auto'
             return await self.client.chat.completions.create(**common_args)
 
+        except openai.PermissionDeniedError as e:
+            logging.error("----------- OpenAI Permission denied error occurred, VPN???")
+            
         except openai.RateLimitError as e:
             raise e
 
